@@ -5,7 +5,6 @@ import torch
 from PIL import Image
 import tempfile
 import os
-import requests
 from calculate_area import predict_with_pixel_area
 
 # Настройки
@@ -14,117 +13,27 @@ st.set_page_config(page_title="Анализ площади застройки", 
 # Заголовок
 st.title("🏢 Анализ площади застройки")
 
-# Прямая ссылка на скачивание модели
-MODEL_URL = "https://drive.google.com/uc?export=download&id=12QDGUwzNVX0AtFuqLxVqK-mu2JmYCqaP"
-MODEL_FILENAME = "best_model.pth"
-
+# Автоматическая загрузка модели
 @st.cache_resource
 def load_model():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
     try:
-        # Проверяем, есть ли уже скачанная модель
-        if not os.path.exists(MODEL_FILENAME):
-            with st.spinner("📥 Скачивание модели..."):
-                # Скачиваем файл напрямую
-                response = requests.get(MODEL_URL, stream=True, timeout=30)
-                
-                # Проверяем статус
-                if response.status_code != 200:
-                    st.error(f"Ошибка HTTP: {response.status_code}")
-                    return None, device
-                
-                # Проверяем, что это не HTML страница
-                content_type = response.headers.get('Content-Type', '')
-                if 'text/html' in content_type.lower():
-                    # Читаем немного контента чтобы понять что это
-                    content_preview = response.content[:200]
-                    st.error(f"Получена HTML страница вместо файла. Первые 200 байт: {content_preview}")
-                    
-                    # Пробуем альтернативный формат
-                    st.info("Пробую альтернативный URL...")
-                    alt_url = f"https://docs.google.com/uc?export=download&id=12QDGUwzNVX0AtFuqLxVqK-mu2JmYCqaP&confirm=t"
-                    response = requests.get(alt_url, stream=True, timeout=30)
-                
-                # Получаем размер файла
-                total_size = int(response.headers.get('content-length', 0))
-                
-                if total_size < 1024 * 1024:  # Меньше 1MB
-                    st.warning(f"⚠️ Файл слишком мал ({total_size} байт). Возможно, это не модель.")
-                
-                # Создаем прогресс-бар
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # Сохраняем файл
-                downloaded = 0
-                with open(MODEL_FILENAME, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            
-                            if total_size > 0:
-                                progress = downloaded / total_size
-                                progress_bar.progress(min(progress, 1.0))
-                                status_text.text(f"Загружено: {downloaded/(1024*1024):.1f} MB")
-                
-                progress_bar.empty()
-                status_text.empty()
-                
-                # Проверяем размер скачанного файла
-                if os.path.exists(MODEL_FILENAME):
-                    file_size = os.path.getsize(MODEL_FILENAME)
-                    file_size_mb = file_size / (1024 * 1024)
-                    
-                    if file_size > 1024 * 1024:  # > 1MB
-                        st.success(f"✅ Модель скачана! Размер: {file_size_mb:.1f} MB")
-                    elif file_size > 0:
-                        st.warning(f"⚠️ Файл скачан ({file_size_mb:.2f} MB), но может быть слишком мал")
-                    else:
-                        st.error("❌ Скачан пустой файл")
-                        os.remove(MODEL_FILENAME)
-                        return None, device
-        
-        # Загружаем модель в память
-        if os.path.exists(MODEL_FILENAME):
-            file_size = os.path.getsize(MODEL_FILENAME)
-            if file_size == 0:
-                st.error("❌ Файл модели пустой")
-                return None, device
-                
-            with st.spinner("🔄 Загрузка модели в память..."):
-                model = torch.load(
-                    MODEL_FILENAME, 
-                    map_location=device,
-                    weights_only=False
-                )
-                model.eval()
-                
-                file_size_mb = file_size / (1024 * 1024)
-                st.success(f"✅ Модель загружена! ({file_size_mb:.1f} MB)")
-                return model, device
-        else:
-            st.error("❌ Файл модели не найден")
-            return None, device
-        
-    except torch.serialization.pickle.UnpicklingError as e:
-        st.error(f"❌ Ошибка загрузки pickle файла: {e}")
-        st.info("Это означает, что скачанный файл не является валидной моделью PyTorch.")
-        return None, device
+        model = torch.load('./checkpoints/best_model.pth', 
+                          map_location=device,
+                          weights_only=False)
+        model.eval()
+        return model, device
     except Exception as e:
-        st.error(f"❌ Ошибка загрузки модели: {str(e)}")
-        return None, device
+        st.error(f"Ошибка загрузки модели: {e}")
+        return None, None
 
 # Загружаем модель при старте
 if 'model' not in st.session_state:
-    with st.spinner("Инициализация приложения..."):
+    with st.spinner("Загрузка модели..."):
         model, device = load_model()
         if model:
             st.session_state.model = model
             st.session_state.device = device
-        else:
-            st.error("Не удалось загрузить модель")
 
 # ========== БОКОВАЯ ПАНЕЛЬ ==========
 with st.sidebar:
@@ -135,14 +44,6 @@ with st.sidebar:
     if 'model' in st.session_state:
         device_name = "GPU" if torch.cuda.is_available() else "CPU"
         st.success(f"Модель загружена на: **{device_name}**")
-        
-        # Кнопка для перезагрузки модели
-        if st.button("🔄 Перезагрузить модель"):
-            if os.path.exists(MODEL_FILENAME):
-                os.remove(MODEL_FILENAME)
-            st.session_state.pop('model', None)
-            st.session_state.pop('device', None)
-            st.rerun()
     else:
         st.error("❌ Модель не загружена")
     
