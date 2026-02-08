@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 import tempfile
 import os
-import gdown
+import requests
 from calculate_area import predict_with_pixel_area
 
 # Настройки
@@ -14,28 +14,69 @@ st.set_page_config(page_title="Анализ площади застройки", 
 # Заголовок
 st.title("🏢 Анализ площади застройки")
 
-# Конфигурация Google Drive
-GOOGLE_DRIVE_FILE_ID = "12QDGUwzNVX0AtFuqLxVqK-mu2JmYCqaP"  # ⬅️ ЗАМЕНИТЕ НА ВАШ ID
+# Конфигурация Google Drive - правильный формат URL
+GOOGLE_DRIVE_FILE_ID = "12QDGUwzNVX0AtFuqLxVqK-mu2JmYCqaP"  # Ваш ID
 MODEL_FILENAME = "best_model.pth"
+MODEL_URL = f"https://drive.google.com/uc?export=download&id={GOOGLE_DRIVE_FILE_ID}"
 
 @st.cache_resource
 def load_model():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     try:
         # Проверяем, есть ли уже скачанная модель
         if not os.path.exists(MODEL_FILENAME):
-            # Скачиваем с Google Drive
-            url = f'https://drive.google.com/uc?id={GOOGLE_DRIVE_FILE_ID}'
-            gdown.download(url, MODEL_FILENAME, quiet=False)
+            with st.spinner("Скачивание модели с Google Drive..."):
+                # Используем requests для скачивания
+                session = requests.Session()
+                response = session.get(MODEL_URL, stream=True)
+                
+                # Обрабатываем большой файл
+                if "Content-Disposition" in response.headers:
+                    # Прямое скачивание
+                    with open(MODEL_FILENAME, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=32768):
+                            if chunk:
+                                f.write(chunk)
+                else:
+                    # Альтернативный метод для больших файлов
+                    confirm_token = None
+                    for key, value in response.cookies.items():
+                        if key.startswith('download_warning'):
+                            confirm_token = value
+                            break
+                    
+                    if confirm_token:
+                        url = f"{MODEL_URL}&confirm={confirm_token}"
+                        response = session.get(url, stream=True)
+                    
+                    with open(MODEL_FILENAME, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=32768):
+                            if chunk:
+                                f.write(chunk)
+                
+                # Проверяем, что файл скачался
+                if os.path.exists(MODEL_FILENAME):
+                    file_size = os.path.getsize(MODEL_FILENAME) / (1024 * 1024)
+                    st.success(f"✅ Модель скачана! Размер: {file_size:.1f} MB")
         
-        # Загружаем модель
-        model = torch.load(MODEL_FILENAME, 
-                          map_location=device,
-                          weights_only=False)
+        # Загружаем модель в память
+        model = torch.load(
+            MODEL_FILENAME, 
+            map_location=device,
+            weights_only=False
+        )
         model.eval()
         return model, device
+        
     except Exception as e:
-        st.error(f"Ошибка загрузки модели: {e}")
+        st.error(f"❌ Ошибка загрузки модели: {str(e)}")
+        st.info(f"""
+        **Проверьте настройки доступа:**
+        1. Убедитесь, что файл доступен по ссылке: [Проверить доступ]({MODEL_URL})
+        2. В настройках доступа должно быть "Доступ для всех с ссылкой"
+        3. Роль: "Читатель"
+        """)
         return None, None
 
 # Загружаем модель при старте
@@ -57,6 +98,9 @@ with st.sidebar:
         st.success(f"Модель загружена на: **{device_name}**")
     else:
         st.error("❌ Модель не загружена")
+        # Кнопка для повторной попытки
+        if st.button("🔄 Повторить загрузку"):
+            st.rerun()
     
     st.markdown("---")
     
