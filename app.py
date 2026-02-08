@@ -6,6 +6,7 @@ from PIL import Image
 import tempfile
 import os
 import requests
+import re
 from calculate_area import predict_with_pixel_area
 
 # Настройки
@@ -14,78 +15,126 @@ st.set_page_config(page_title="Анализ площади застройки", 
 # Заголовок
 st.title("🏢 Анализ площади застройки")
 
-# Конфигурация Google Drive - правильный формат URL
-GOOGLE_DRIVE_FILE_ID = "12QDGUwzNVX0AtFuqLxVqK-mu2JmYCqaP"  # Ваш ID
+# ID файла на Google Drive
+GOOGLE_DRIVE_FILE_ID = "12QDGUwzNVX0AtFuqLxVqK-mu2JmYCqaP"
 MODEL_FILENAME = "best_model.pth"
-MODEL_URL = f"https://drive.google.com/uc?export=download&id={GOOGLE_DRIVE_FILE_ID}"
+
+def get_confirm_token(response):
+    """Извлекает токен подтверждения из cookies"""
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            return value
+    return None
+
+def save_response_content(response, destination):
+    """Сохраняет содержимое ответа в файл с прогресс-баром"""
+    CHUNK_SIZE = 32768
+    
+    with open(destination, "wb") as f:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        for chunk in response.iter_content(CHUNK_SIZE):
+            if chunk:
+                f.write(chunk)
+                downloaded += len(chunk)
+                
+                if total_size > 0:
+                    progress = downloaded / total_size
+                    progress_bar.progress(min(progress, 1.0))
+                    status_text.text(f"Загружено: {downloaded/(1024*1024):.1f} MB / {total_size/(1024*1024):.1f} MB")
+        
+        progress_bar.empty()
+        status_text.empty()
 
 @st.cache_resource
 def load_model():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    # Если файл уже существует, проверяем его размер
+    if os.path.exists(MODEL_FILENAME):
+        file_size = os.path.getsize(MODEL_FILENAME) / (1024 * 1024)
+        if file_size > 1:  # Если файл больше 1MB, считаем его валидным
+            try:
+                model = torch.load(MODEL_FILENAME, map_location=device, weights_only=False)
+                model.eval()
+                st.success(f"✅ Модель загружена из кэша ({file_size:.1f} MB)")
+                return model, device
+            except:
+                os.remove(MODEL_FILENAME)  # Удаляем поврежденный файл
+    
     try:
-        # Проверяем, есть ли уже скачанная модель
-        if not os.path.exists(MODEL_FILENAME):
-            with st.spinner("Скачивание модели с Google Drive..."):
-                # Используем requests для скачивания
-                session = requests.Session()
-                response = session.get(MODEL_URL, stream=True)
+        with st.spinner("🔄 Скачивание модели с Google Drive..."):
+            session = requests.Session()
+            
+            # URL для скачивания
+            URL = f"https://drive.google.com/uc?export=download&id={GOOGLE_DRIVE_FILE_ID}"
+            
+            # Первый запрос для получения токена подтверждения
+            response = session.get(URL, stream=True)
+            token = get_confirm_token(response)
+            
+            if token:
+                # Если нужен токен подтверждения (большие файлы)
+                params = {'id': GOOGLE_DRIVE_FILE_ID, 'confirm': token}
+                response = session.get(URL, params=params, stream=True)
+            
+            # Сохраняем файл
+            save_response_content(response, MODEL_FILENAME)
+            
+            # Проверяем размер скачанного файла
+            if os.path.exists(MODEL_FILENAME):
+                file_size = os.path.getsize(MODEL_FILENAME) / (1024 * 1024)
+                if file_size < 1:
+                    st.error("❌ Скачанный файл слишком мал. Возможно, это HTML-страница.")
+                    os.remove(MODEL_FILENAME)
+                    return None, device
                 
-                # Обрабатываем большой файл
-                if "Content-Disposition" in response.headers:
-                    # Прямое скачивание
-                    with open(MODEL_FILENAME, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=32768):
-                            if chunk:
-                                f.write(chunk)
-                else:
-                    # Альтернативный метод для больших файлов
-                    confirm_token = None
-                    for key, value in response.cookies.items():
-                        if key.startswith('download_warning'):
-                            confirm_token = value
-                            break
-                    
-                    if confirm_token:
-                        url = f"{MODEL_URL}&confirm={confirm_token}"
-                        response = session.get(url, stream=True)
-                    
-                    with open(MODEL_FILENAME, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=32768):
-                            if chunk:
-                                f.write(chunk)
+                st.success(f"✅ Модель скачана! Размер: {file_size:.1f} MB")
                 
-                # Проверяем, что файл скачался
-                if os.path.exists(MODEL_FILENAME):
-                    file_size = os.path.getsize(MODEL_FILENAME) / (1024 * 1024)
-                    st.success(f"✅ Модель скачана! Размер: {file_size:.1f} MB")
-        
-        # Загружаем модель в память
-        model = torch.load(
-            MODEL_FILENAME, 
-            map_location=device,
-            weights_only=False
-        )
-        model.eval()
-        return model, device
-        
+                # Загружаем модель
+                model = torch.load(MODEL_FILENAME, map_location=device, weights_only=False)
+                model.eval()
+                return model, device
+            else:
+                st.error("❌ Не удалось скачать файл")
+                return None, device
+                
     except Exception as e:
         st.error(f"❌ Ошибка загрузки модели: {str(e)}")
-        st.info(f"""
-        **Проверьте настройки доступа:**
-        1. Убедитесь, что файл доступен по ссылке: [Проверить доступ]({MODEL_URL})
-        2. В настройках доступа должно быть "Доступ для всех с ссылкой"
-        3. Роль: "Читатель"
+        # Показываем альтернативные инструкции
+        st.info("""
+        **Если скачивание не работает:**
+        
+        1. **Откройте эту ссылку в браузере:**  
+           https://drive.google.com/uc?export=download&id=12QDGUwzNVX0AtFuqLxVqK-mu2JmYCqaP
+        
+        2. **Вручную скачайте файл `best_model.pth`**
+        
+        3. **Загрузите его прямо в Streamlit Cloud:**
+           ```python
+           # Временно: загрузите файл через интерфейс Streamlit
+           uploaded_model = st.file_uploader("Загрузите модель", type=['pth'])
+           if uploaded_model:
+               with open('best_model.pth', 'wb') as f:
+                   f.write(uploaded_model.getbuffer())
+           ```
         """)
-        return None, None
+        return None, device
 
 # Загружаем модель при старте
 if 'model' not in st.session_state:
-    with st.spinner("Загрузка модели..."):
-        model, device = load_model()
-        if model:
-            st.session_state.model = model
-            st.session_state.device = device
+    model, device = load_model()
+    if model:
+        st.session_state.model = model
+        st.session_state.device = device
+    else:
+        # Показываем кнопку для повторной попытки
+        if st.button("🔄 Повторить загрузку модели"):
+            st.rerun()
 
 # ========== БОКОВАЯ ПАНЕЛЬ ==========
 with st.sidebar:
@@ -98,9 +147,6 @@ with st.sidebar:
         st.success(f"Модель загружена на: **{device_name}**")
     else:
         st.error("❌ Модель не загружена")
-        # Кнопка для повторной попытки
-        if st.button("🔄 Повторить загрузку"):
-            st.rerun()
     
     st.markdown("---")
     
