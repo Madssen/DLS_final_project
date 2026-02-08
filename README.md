@@ -1,4 +1,4 @@
-# DLS_final_project
+# DLS_final_project (telegram: @gorrose)
 
 ### Основной проект - сегментация зданий (segmentation.ipynb)
 1) **Проведена сегментация зданий**  
