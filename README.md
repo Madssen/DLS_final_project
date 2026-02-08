@@ -2,7 +2,7 @@
 
 ### Основной проект - сегментация зданий (segmentation.ipynb)
 1) **Проведена сегментация зданий**  
-Детали и выводы предоставлены в ноутбуке  
+Детали и выводы предоставлены в ноутбуке segmentation.ipynb  
 Для запуска ноутбуков необходимо скачать и разархивировать датасет [RescueNet-A-High-Resolution-Post-Disaster-UAV-Dataset-for-Semantic-Segmentation](https://github.com/BinaLab/RescueNet-A-High-Resolution-Post-Disaster-UAV-Dataset-for-Semantic-Segmentation) в корневую папку  
 
 2) **Проведено мини-исследование возможности предсказания высоты и соответственно площади зданий** исходя из нее в рамках ноутбука height_study.ipynb  
